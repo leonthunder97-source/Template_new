@@ -1,0 +1,461 @@
+/* ============================================================
+   VOICE COMMAND ENGINE + 25 NEW FEATURES
+   Hooks into window.__ANIJITH exposed by the core script.
+   ============================================================ */
+(() => {
+'use strict';
+const A = window.__ANIJITH || {};
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const $ = (t, c, html) => { const e = document.createElement(t); if (c) e.className = c; if (html != null) e.innerHTML = html; return e; };
+let VW = innerWidth, VH = innerHeight;
+addEventListener('resize', () => { VW = innerWidth; VH = innerHeight; sizeFx(); });
+
+/* ============ DOM BUILD ============ */
+const vxCanvas = $('canvas'); vxCanvas.id = 'vx-canvas'; vxCanvas.setAttribute('data-testid', 'vx-canvas');
+const idCanvas = $('canvas'); idCanvas.id = 'id-canvas'; idCanvas.setAttribute('data-testid', 'identity-canvas');
+const dock = $('div'); dock.id = 'voice-dock';
+const orb = $('button'); orb.id = 'voice-orb'; orb.setAttribute('data-testid', 'voice-orb');
+orb.setAttribute('aria-label', 'voice status');
+for (let i = 0; i < 5; i++) orb.appendChild($('span', 'vbar'));
+const stateEl = $('span'); stateEl.id = 'voice-state'; stateEl.setAttribute('data-testid', 'voice-state'); stateEl.textContent = 'voice idle';
+const helpFab = $('button', null, '?'); helpFab.id = 'help-fab'; helpFab.setAttribute('data-testid', 'help-fab');
+dock.append(orb, stateEl, helpFab);
+const micFab = $('button'); micFab.id = 'mic-fab'; micFab.setAttribute('data-testid', 'mic-fab');
+micFab.setAttribute('aria-label', 'toggle microphone');
+micFab.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 15a4 4 0 0 0 4-4V6a4 4 0 1 0-8 0v5a4 4 0 0 0 4 4zm6-4a6 6 0 0 1-12 0H4a8 8 0 0 0 7 7.94V22h2v-3.06A8 8 0 0 0 20 11h-2z"/></svg>';
+const caption = $('div'); caption.id = 'voice-caption'; caption.setAttribute('data-testid', 'voice-caption');
+const stack = $('div'); stack.id = 'toast-stack'; stack.setAttribute('data-testid', 'toast-stack');
+const blackout = $('div'); blackout.id = 'blackout'; blackout.setAttribute('data-testid', 'blackout-overlay');
+blackout.appendChild($('span', null, 'still here.'));
+const flash = $('div'); flash.id = 'flash'; flash.setAttribute('data-testid', 'flash-overlay');
+
+const help = $('div'); help.id = 'voice-help'; help.setAttribute('data-testid', 'voice-help');
+help.innerHTML = `
+  <div class="vh-head"><span>voice console // v.666</span><button id="help-close" data-testid="help-close" aria-label="close">×</button></div>
+  <div class="vh-body">
+    <div class="vh-group"><h4>core commands</h4>
+      <p><b>"shatter / break"</b> — explode the screen into glass shards<br>
+      <b>"reveal / show confessions"</b> — un-redact every secret bar<br>
+      <b>"catch / lock"</b> — freeze the runaway buttons center-screen · <b>"release"</b> frees them<br>
+      <b>"red / cyan / green / gold / violet / ghost"</b> — repaint the particle field<br>
+      <b>"normal / reset"</b> — restore everything<br>
+      <b>"identity / who are you"</b> — the canvas types its name</p></div>
+    <div class="vh-group"><h4>play</h4>
+      <p><b>"truth"</b> / <b>"dare"</b> — deal a terminal card · <b>"party"</b> — 142 BPM · <b>"calm"</b> — 68 BPM drift · <b>"dance"</b> — buttons wiggle · <b>"haunt"</b> — 30s of whispers</p></div>
+    <div class="vh-group"><h4>atmospheres</h4>
+      <p><b>"rain"</b> — crimson downpour · <b>"ash"</b> — falling snow-ash · <b>"hearts"</b> — heart burst · <b>"warp"</b> — hyperspeed tunnel · <b>"blackout"</b> — lights out · <b>"invert"</b> — negative flash</p></div>
+    <div class="vh-group"><h4>navigate</h4>
+      <p><b>"scroll up / down / top / bottom"</b> · <b>"music"</b> — jump to spotify · <b>"instagram"</b> · <b>"discord"</b></p></div>
+    <div class="vh-group"><h4>it talks back</h4>
+      <p><b>"time"</b> · <b>"compliment me"</b> · <b>"insult me"</b> · <b>"talk to me"</b> · <b>"screenshot"</b> · <b>"secret"</b> · <b>"sleep"</b> — mic off</p></div>
+    <div class="vh-group"><h4>no mic? type it.</h4>
+      <p>every voice command works typed below. keys: <b>V</b> mic · <b>H</b> this console.</p></div>
+    <div class="vh-hist" data-testid="cmd-history"><h4 style="font-size:9px;letter-spacing:.45em;text-transform:uppercase;color:var(--crimson);margin-bottom:8px;">history</h4><p id="hist-list">nothing yet. say something.</p></div>
+  </div>
+  <form id="cmd-form"><input id="cmd-input" data-testid="cmd-input" placeholder="type a command…" autocomplete="off"><button id="cmd-submit" data-testid="cmd-submit" type="submit">run</button></form>`;
+document.body.append(vxCanvas, idCanvas, dock, micFab, caption, stack, blackout, flash, help);
+
+const DPR = Math.min(devicePixelRatio || 1, 2);
+function sizeFx() { for (const c of [vxCanvas, idCanvas]) { c.width = VW * DPR; c.height = VH * DPR; } }
+sizeFx();
+const vctx = vxCanvas.getContext('2d');
+
+/* ============ TOASTS + HISTORY + TTS ============ */
+let toastN = 0;
+function toast(label, sub) {
+  const t = $('div', 'toast', sub ? `${label} <b>//</b> ${sub}` : label);
+  t.setAttribute('data-testid', 'voice-toast-' + (++toastN));
+  stack.appendChild(t);
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 420); }, 3000);
+}
+const hist = [];
+function logCmd(label) {
+  hist.unshift(label); if (hist.length > 6) hist.pop();
+  document.getElementById('hist-list').textContent = hist.join('  ·  ');
+}
+function say(text) {
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.pitch = 0.75; u.rate = 0.95; u.volume = 0.9;
+    speechSynthesis.speak(u);
+  } catch (e) {}
+}
+
+/* ============ FEATURE IMPLEMENTATIONS ============ */
+const PAL_CSS = { red: '#ff1744', cyan: '#00d9ff', green: '#1aff73', gold: '#ff9d14', violet: '#9a33ff', ghost: '#b8bcc8' };
+const igBtn = document.getElementById('ig-btn');
+const dcBtn = document.getElementById('dc-btn');
+
+function setPal(name) {
+  if (A.setPalette) A.setPalette(name);
+  document.documentElement.style.setProperty('--crimson', PAL_CSS[name]);
+}
+function fnShatter() { A.shatter && A.shatter(VW / 2, VH / 2); say('breaking.'); }
+function fnReveal() {
+  document.querySelectorAll('.redacted').forEach((s, i) => setTimeout(() => s.classList.add('revealed'), i * 260));
+  document.getElementById('confessions').scrollIntoView({ behavior: 'smooth' });
+  say('every secret. yours now.');
+}
+function fnCatch() { window.__CATCH_LOCK = true; document.getElementById('ig-tag').textContent = 'locked in'; }
+function fnRelease() { window.__CATCH_LOCK = false; document.getElementById('ig-tag').textContent = 'caught you'; }
+function fnReset() {
+  setPal('red'); if (A.beat) A.beat.bpm = 96;
+  window.__CATCH_LOCK = false; modes.rain = modes.ash = modes.haunt = false;
+  document.documentElement.style.filter = '';
+}
+let idAnim = null;
+function fnIdentity() {
+  cancelAnimationFrame(idAnim);
+  const c = idCanvas.getContext('2d');
+  const word = 'ANIJITH', start = performance.now();
+  const size = Math.min(VW * 0.16, 190);
+  (function frame(now) {
+    const el = (now - start) / 1000;
+    c.setTransform(DPR, 0, 0, DPR, 0, 0);
+    c.clearRect(0, 0, VW, VH);
+    const n = Math.min(word.length, Math.floor(el / 0.16) + 1);
+    let alpha = 1;
+    if (el > 3) alpha = Math.max(0, 1 - (el - 3) / 1);
+    if (alpha <= 0) { c.clearRect(0, 0, VW, VH); return; }
+    c.globalAlpha = alpha;
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = `700 ${size}px Didot, 'Bodoni MT', Georgia, serif`;
+    c.shadowColor = '#ff1744'; c.shadowBlur = 42;
+    c.fillStyle = '#ff5c7a';
+    c.fillText(word.slice(0, n), VW / 2, VH / 2);
+    if (n >= word.length) {
+      c.font = '11px "Courier New", monospace';
+      c.shadowBlur = 12; c.fillStyle = 'rgba(232,234,240,.7)';
+      c.fillText('y o u   a l r e a d y   k n e w', VW / 2, VH / 2 + size * 0.62);
+    }
+    idAnim = requestAnimationFrame(frame);
+  })(start);
+  say('ANIJITH.');
+}
+function dealCard(id) {
+  document.getElementById('terminal').scrollIntoView({ behavior: 'smooth' });
+  setTimeout(() => document.getElementById(id).click(), 650);
+}
+function fnMusic() {
+  document.getElementById('outro').scrollIntoView({ behavior: 'smooth' });
+  const b = document.getElementById('sp-badge');
+  b.classList.remove('flash'); void b.offsetWidth; b.classList.add('flash');
+}
+function fnInstagram() {
+  const w = window.open(igBtn.href, '_blank', 'noopener');
+  if (!w) toast('popup blocked — go catch the button', 'instagram');
+}
+function fnParty() { if (A.beat) A.beat.bpm = 142; A.spawnSparks && A.spawnSparks(VW / 2, VH / 2, 60, '#ff1744'); say('let’s go.'); }
+function fnCalm() { if (A.beat) A.beat.bpm = 68; say('breathe.'); }
+function fnDance() {
+  for (const b of [igBtn, dcBtn]) { b.classList.remove('dance'); void b.offsetWidth; b.classList.add('dance'); }
+}
+function fnBlackout() {
+  blackout.classList.add('on');
+  setTimeout(() => blackout.classList.remove('on'), 3400);
+}
+function fnInvert() {
+  document.documentElement.style.filter = 'invert(1) hue-rotate(180deg)';
+  setTimeout(() => { document.documentElement.style.filter = ''; }, 1500);
+}
+function fnScreenshot() {
+  flash.classList.remove('pop'); void flash.offsetWidth; flash.classList.add('pop');
+  toast('captured. i look good.', 'screenshot'); say('got it.');
+}
+function fnTime() {
+  const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  toast('it is ' + t, 'time'); say('it is ' + t);
+}
+const COMPLIMENTS = ['you scroll like poetry.', 'your cursor moves like it means it.', 'the dark suits you.', 'you found this page. that already says everything.'];
+const INSULTS = ['you hover like you type — hesitant.', 'even the particles are avoiding you.', 'three seconds in and already lost. impressive.'];
+const SPOKEN = ['you keep coming back. i noticed.', 'the page remembers everyone. especially you.', 'careful. the last visitor is still here somewhere.'];
+const pick = arr => arr[(Math.random() * arr.length) | 0];
+function fnCompliment() { const c = pick(COMPLIMENTS); toast(c, 'compliment'); say(c); }
+function fnInsult() { const c = pick(INSULTS); toast(c, 'insult'); say(c); }
+function fnSpeak() { const c = pick(SPOKEN); toast(c, 'the page says'); say(c); }
+function fnSecret() { toast('↑ ↑ ↓ ↓ ← → ← → B A', 'konami — try it'); }
+
+/* ---- atmospheric modes on vx-canvas ---- */
+const modes = { rain: false, ash: false, haunt: false };
+const drops = [], flakes = [], hearts = [], streaks = [];
+let hauntTimer = null;
+function toggleMode(name, label) {
+  modes[name] = !modes[name];
+  if (name === 'haunt') {
+    clearInterval(hauntTimer);
+    if (modes.haunt) {
+      const WHISPERS = ['behind you.', 'i never left.', 'closer.', 'you feel that?', 'don’t turn around.'];
+      hauntTimer = setInterval(() => {
+        if (A.whisper) A.whisper(pick(WHISPERS), VW * (0.15 + Math.random() * 0.7), VH * (0.15 + Math.random() * 0.7));
+      }, 3200);
+      setTimeout(() => { modes.haunt = false; clearInterval(hauntTimer); }, 32000);
+    }
+  }
+  return modes[name] ? label + ' on' : label + ' off';
+}
+function fnHearts() {
+  for (let i = 0; i < 42; i++) hearts.push({
+    x: VW * Math.random(), y: VH + 20, vy: -(1 + Math.random() * 2.4),
+    vx: (Math.random() - .5) * .8, s: 5 + Math.random() * 9, life: 1, wob: Math.random() * 6
+  });
+}
+function fnWarp() {
+  if (A.beat) A.beat.pulse = 1.5;
+  for (let i = 0; i < 130; i++) {
+    const a = Math.random() * Math.PI * 2;
+    streaks.push({ a, r: 20 + Math.random() * 60, sp: 9 + Math.random() * 16, life: 1 });
+  }
+}
+function drawHeart(c, x, y, s) {
+  c.beginPath();
+  c.moveTo(x, y + s * .3);
+  c.bezierCurveTo(x, y, x - s, y, x - s, y + s * .3);
+  c.bezierCurveTo(x - s, y + s * .75, x, y + s * 1.05, x, y + s * 1.35);
+  c.bezierCurveTo(x, y + s * 1.05, x + s, y + s * .75, x + s, y + s * .3);
+  c.bezierCurveTo(x + s, y, x, y, x, y + s * .3);
+  c.fill();
+}
+function fxLoop() {
+  vctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  vctx.clearRect(0, 0, VW, VH);
+  if (modes.rain) {
+    if (drops.length < 130 && Math.random() < .5) drops.push({ x: Math.random() * VW, y: -12, l: 9 + Math.random() * 16, s: 7 + Math.random() * 7 });
+    vctx.strokeStyle = 'rgba(255,23,68,.55)'; vctx.lineWidth = 1.1;
+    vctx.shadowColor = '#ff1744'; vctx.shadowBlur = 6;
+    for (let i = drops.length - 1; i >= 0; i--) {
+      const d = drops[i]; d.y += d.s;
+      vctx.beginPath(); vctx.moveTo(d.x, d.y); vctx.lineTo(d.x - 1.5, d.y - d.l); vctx.stroke();
+      if (d.y > VH + 20) drops.splice(i, 1);
+    }
+    vctx.shadowBlur = 0;
+  } else drops.length = 0;
+  if (modes.ash) {
+    if (flakes.length < 110 && Math.random() < .5) flakes.push({ x: Math.random() * VW, y: -8, s: .5 + Math.random() * 1.4, r: .8 + Math.random() * 2, p: Math.random() * 6 });
+    vctx.fillStyle = 'rgba(232,234,240,.6)';
+    for (let i = flakes.length - 1; i >= 0; i--) {
+      const f = flakes[i]; f.y += f.s; f.x += Math.sin(f.y * .02 + f.p) * .5;
+      vctx.globalAlpha = .25 + Math.random() * .5;
+      vctx.beginPath(); vctx.arc(f.x, f.y, f.r, 0, 7); vctx.fill();
+      if (f.y > VH + 10) flakes.splice(i, 1);
+    }
+    vctx.globalAlpha = 1;
+  } else flakes.length = 0;
+  for (let i = hearts.length - 1; i >= 0; i--) {
+    const h = hearts[i]; h.y += h.vy; h.x += h.vx + Math.sin(h.y * .03 + h.wob) * .6; h.life -= .004;
+    if (h.life <= 0 || h.y < -40) { hearts.splice(i, 1); continue; }
+    vctx.globalAlpha = h.life;
+    vctx.fillStyle = '#ff5c7a'; vctx.shadowColor = '#ff1744'; vctx.shadowBlur = 14;
+    drawHeart(vctx, h.x, h.y, h.s);
+  }
+  vctx.globalAlpha = 1; vctx.shadowBlur = 0;
+  for (let i = streaks.length - 1; i >= 0; i--) {
+    const s = streaks[i]; s.r += s.sp; s.life -= .022;
+    if (s.life <= 0) { streaks.splice(i, 1); continue; }
+    const cx = VW / 2, cy = VH / 2;
+    vctx.globalAlpha = s.life * .8;
+    vctx.strokeStyle = '#ff5c7a'; vctx.lineWidth = 1.4;
+    vctx.beginPath();
+    vctx.moveTo(cx + Math.cos(s.a) * s.r, cy + Math.sin(s.a) * s.r);
+    vctx.lineTo(cx + Math.cos(s.a) * (s.r + 60), cy + Math.sin(s.a) * (s.r + 60));
+    vctx.stroke();
+  }
+  vctx.globalAlpha = 1;
+  requestAnimationFrame(fxLoop);
+}
+requestAnimationFrame(fxLoop);
+
+/* ============ COMMAND TABLE ============ */
+const CMDS = [
+  [['show confessions', 'shatter the screen', 'break the screen', 'stop listening', 'who are you', 'your name', 'what can you do', 'scroll down', 'scroll up', 'talk to me', 'say something', 'compliment me', 'insult me', 'roast me', 'lights out', 'what time', 'let go'], null], // ordering placeholder (multi-word first)
+  [['shatter', 'break'], fnShatter, 'Shatter'],
+  [['show confessions', 'reveal', 'confessions', 'unredact'], fnReveal, 'Reveal'],
+  [['catch', 'lock', 'freeze'], fnCatch, 'Catch'],
+  [['release', 'free', 'let go'], fnRelease, 'Release'],
+  [['red', 'crimson'], () => setPal('red'), 'Palette: Red'],
+  [['cyan', 'neon', 'blue'], () => setPal('cyan'), 'Palette: Cyan'],
+  [['green', 'matrix'], () => setPal('green'), 'Palette: Matrix'],
+  [['gold', 'amber'], () => setPal('gold'), 'Palette: Gold'],
+  [['violet', 'purple'], () => setPal('violet'), 'Palette: Violet'],
+  [['ghost', 'mono'], () => setPal('ghost'), 'Palette: Ghost'],
+  [['normal', 'reset', 'default'], fnReset, 'Reset'],
+  [['identity', 'who are you', 'your name'], fnIdentity, 'Identity'],
+  [['truth'], () => dealCard('truth-btn'), 'Truth'],
+  [['dare'], () => dealCard('dare-btn'), 'Dare'],
+  [['scroll down', 'down'], () => scrollBy({ top: VH * .9, behavior: 'smooth' }), 'Scroll Down'],
+  [['scroll up', 'up'], () => scrollBy({ top: -VH * .9, behavior: 'smooth' }), 'Scroll Up'],
+  [['top', 'beginning'], () => scrollTo({ top: 0, behavior: 'smooth' }), 'Top'],
+  [['bottom', 'end'], () => scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }), 'Bottom'],
+  [['music', 'spotify', 'playlist'], fnMusic, 'Music'],
+  [['instagram', 'insta'], fnInstagram, 'Instagram'],
+  [['discord'], () => dcBtn.click(), 'Discord'],
+  [['help', 'commands', 'what can you do'], () => toggleHelp(true), 'Help'],
+  [['party', 'rave', 'hype'], fnParty, 'Party'],
+  [['calm', 'chill', 'relax'], fnCalm, 'Calm'],
+  [['rain'], () => toast(toggleMode('rain', 'rain'), 'atmosphere'), 'Rain'],
+  [['ash', 'snow'], () => toast(toggleMode('ash', 'ash'), 'atmosphere'), 'Ash'],
+  [['heart', 'love'], fnHearts, 'Hearts'],
+  [['warp', 'hyperspeed', 'turbo'], fnWarp, 'Warp'],
+  [['blackout', 'lights out', 'darkness'], fnBlackout, 'Blackout'],
+  [['invert', 'negative'], fnInvert, 'Invert'],
+  [['haunt', 'spooky'], () => toast(toggleMode('haunt', 'haunt'), 'atmosphere'), 'Haunt'],
+  [['screenshot', 'capture', 'smile'], fnScreenshot, 'Screenshot'],
+  [['time', 'clock', 'what time'], fnTime, 'Time'],
+  [['compliment me', 'compliment'], fnCompliment, 'Compliment'],
+  [['insult me', 'insult', 'roast me'], fnInsult, 'Insult'],
+  [['talk to me', 'speak', 'say something'], fnSpeak, 'Speak'],
+  [['stop listening', 'sleep', 'goodbye'], stopVoice, 'Sleep'],
+  [['dance', 'move'], fnDance, 'Dance'],
+  [['secret', 'konami', 'cheat'], fnSecret, 'Secret'],
+].filter(e => e[1]);
+CMDS.sort((a, b) => Math.max(...b[0].map(k => k.length)) - Math.max(...a[0].map(k => k.length)));
+const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function handleCommand(raw, source) {
+  const t = raw.toLowerCase().trim();
+  if (!t) return;
+  for (const [keys, fn, label] of CMDS) {
+    if (keys.some(k => new RegExp('\\b' + esc(k) + '\\b').test(t))) {
+      toast('Voice Command Executed: ' + label, source === 'typed' ? 'typed' : null);
+      logCmd(label);
+      fn();
+      return;
+    }
+  }
+  toast('unrecognized: "' + raw + '"', 'say "help"');
+}
+
+/* ============ SPEECH RECOGNITION ============ */
+let rec = null, wantListen = false, restartDelay = 300, audioCtx = null, analyser = null, micLevel = 0;
+function setState(txt, cls) {
+  stateEl.textContent = txt;
+  orb.classList.toggle('live', cls === 'live');
+  orb.classList.toggle('err', cls === 'err');
+  micFab.classList.toggle('on', cls === 'live');
+}
+function hookMicLevel() {
+  if (analyser || !navigator.mediaDevices) return;
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 64;
+    src.connect(analyser);
+  }).catch(() => {});
+}
+function startVoice() {
+  if (!SR) {
+    toast('voice not supported here — type commands instead', 'fallback');
+    toggleHelp(true);
+    return;
+  }
+  wantListen = true; restartDelay = 300;
+  if (!rec) {
+    rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = 'en-US';
+    rec.onstart = () => { setState('listening', 'live'); hookMicLevel(); };
+    rec.onsoundstart = () => setState('hearing you', 'live');
+    rec.onresult = e => {
+      let interim = '', final = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
+      }
+      caption.textContent = interim ? 'hearing: ' + interim : '';
+      caption.classList.toggle('show', !!interim);
+      if (final) { caption.classList.remove('show'); handleCommand(final, 'voice'); }
+    };
+    rec.onerror = e => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        wantListen = false;
+        setState('mic denied', 'err');
+        toast('microphone blocked — allow it, or type commands', 'permission');
+        toggleHelp(true);
+      } else if (e.error === 'network') {
+        setState('network hiccup', 'err');
+      }
+    };
+    rec.onend = () => {
+      if (wantListen) {
+        setState('reconnecting…', 'live');
+        setTimeout(() => { try { rec.start(); } catch (e) {} }, restartDelay);
+        restartDelay = Math.min(restartDelay * 1.5, 4000);
+      } else setState('voice idle');
+    };
+  }
+  try { rec.start(); } catch (e) {}
+}
+function stopVoice() {
+  wantListen = false;
+  if (rec) try { rec.stop(); } catch (e) {}
+  setState('voice idle');
+  toast('mic sleeping — tap to wake', 'sleep');
+}
+orb.addEventListener('click', () => wantListen ? stopVoice() : startVoice());
+micFab.addEventListener('click', () => wantListen ? stopVoice() : startVoice());
+
+/* ============ WAVEFORM LEVELS ============ */
+const bars = [...orb.querySelectorAll('.vbar')];
+const freq = new Uint8Array(32);
+let lastBump = 0;
+(function waveLoop() {
+  if (analyser && wantListen) {
+    analyser.getByteFrequencyData(freq);
+    micLevel = freq.reduce((a, b) => a + b, 0) / (freq.length * 255);
+    for (let i = 0; i < bars.length; i++) {
+      const v = freq[2 + i * 3] / 255;
+      bars[i].style.height = (5 + v * 22) + 'px';
+    }
+    const now = performance.now();
+    if (micLevel > 0.32 && now - lastBump > 900 && A.beat) {
+      A.beat.pulse = Math.max(A.beat.pulse, 1.2);
+      lastBump = now;
+    }
+  } else if (!wantListen) bars.forEach(b => b.style.height = '');
+  requestAnimationFrame(waveLoop);
+})();
+
+/* ============ HELP PANEL + TYPED FALLBACK ============ */
+function toggleHelp(force) {
+  const open = force !== undefined ? force : !help.classList.contains('open');
+  help.classList.toggle('open', open);
+  if (open) setTimeout(() => document.getElementById('cmd-input').focus(), 450);
+}
+helpFab.addEventListener('click', () => toggleHelp());
+document.getElementById('help-close').addEventListener('click', () => toggleHelp(false));
+document.getElementById('cmd-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const inp = document.getElementById('cmd-input');
+  handleCommand(inp.value, 'typed');
+  inp.value = '';
+});
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  const k = e.key.toLowerCase();
+  if (k === 'v') wantListen ? stopVoice() : startVoice();
+  if (k === 'h') toggleHelp();
+});
+
+/* ============ KONAMI CODE ============ */
+const KONAMI = ['arrowup', 'arrowup', 'arrowdown', 'arrowdown', 'arrowleft', 'arrowright', 'arrowleft', 'arrowright', 'b', 'a'];
+let kPos = 0;
+addEventListener('keydown', e => {
+  kPos = e.key.toLowerCase() === KONAMI[kPos] ? kPos + 1 : 0;
+  if (kPos === KONAMI.length) {
+    kPos = 0;
+    toast('KONAMI — you absolute menace', 'cheat accepted');
+    fnShatter(); fnHearts();
+    const names = Object.keys(PAL_CSS);
+    names.forEach((n, i) => setTimeout(() => setPal(n), 1800 + i * 380));
+    setTimeout(() => setPal('red'), 1800 + names.length * 380);
+  }
+});
+
+/* ============ WELCOME ============ */
+setTimeout(() => {
+  if (!wantListen && !hist.length) {
+    toast(SR ? 'tap the mic — or press V — and say "help"' : 'no speech api here — press H for typed commands', 'voice engine online');
+  }
+}, 9000);
+})();
